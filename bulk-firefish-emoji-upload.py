@@ -1,6 +1,8 @@
 import requests
 from pathlib import Path
 import os
+import re
+import time
 
 category = "CATEGORY NAME"
 
@@ -87,18 +89,38 @@ for file in list_to_add:
       "i": api_key,
       "name": file.name
     }
-    files = {
-      "file": open(file, "rb")
-    }
-    response = requests.post(url, data=payload, files=files)
+    success = False
+    while not success:
+      files = {
+        "file": open(file, "rb")
+      }
+      response = requests.post(url, data=payload, files=files)
 
-    if response.status_code == 200:
-      print("Sucessfully uploaded file!")
-    else:
-      print("failed to upload file!")
-      print(response.json())
-      break
-  fileId = response.json()["id"]
+      if response.status_code == 200:
+        print("Sucessfully uploaded file!")
+        success = True
+      elif response.status_code == 429:
+        print("Whoops, hit the rate limit")
+        pattern = r'(\d+) minute\(s\), (\d+) second\(s\)'
+        message = response.json().get('error', {}).get('message', '')
+        match = re.search(pattern, message)
+        if match:
+          # Extract minutes and seconds from the matched groups
+          minutes = int(match.group(1))
+          seconds = int(match.group(2))
+          print(f"Sleeping for Minutes: {minutes}, Seconds: {seconds+10}")
+          time.sleep(minutes*60+seconds+10)
+        else:
+          print("Time not found in the input string.")
+          break
+      else:
+        print("failed to upload file!")
+        print(response.json())
+        break
+  data = response.json()
+  if isinstance(data, list):
+    data = next((item for item in data if "image" in item["type"].lower()), None)
+  fileId = data.get("id")
   
   url = base_url+"admin/emoji/add"
   data = {
