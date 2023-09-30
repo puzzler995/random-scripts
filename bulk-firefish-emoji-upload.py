@@ -29,7 +29,7 @@ if response.status_code == 200:
   print("Sucessfully fetched emoji list!")
   emojidata = response.json()
 else: 
-  print("failed to fetch emoji list!")
+  print("failed to fetch emoji list!\a")
   print(response.json())
 
 emojinames = []
@@ -54,7 +54,7 @@ while emojidata:
     print("Sucessfully fetched emoji list!")
     emojidata = response.json()
   else: 
-    print("failed to fetch emoji list!")
+    print("failed to fetch emoji list!\a")
     print(response.json())
 
 
@@ -81,7 +81,7 @@ for file in list_to_add:
   if response.status_code == 200:
     print("Sucessfully fetched file list!")
   else:
-    print("failed to fetch file list!")
+    print("failed to fetch file list!\a")
     break
   if not response.json():
     print("File not found, uploading...")
@@ -118,7 +118,7 @@ for file in list_to_add:
           print("Time not found in the input string.")
           sys.exit()
       else:
-        print("failed to upload file!")
+        print("failed to upload file!\a")
         print(response.json())
         break
   data = response.json()
@@ -135,7 +135,7 @@ for file in list_to_add:
   if response.status_code == 200:
     print("Sucessfully created emoji!")
   else:
-    print("failed to create emoji!")
+    print("failed to create emoji!\a")
     print(response.json())
     break
 
@@ -162,6 +162,6 @@ for file in list_to_add:
   if response.status_code == 204:
     print("Sucessfully updated emoji!")
   else:
-    print("failed to update emoji!")
+    print("failed to update emoji!\a")
     print(response.json())
     break
