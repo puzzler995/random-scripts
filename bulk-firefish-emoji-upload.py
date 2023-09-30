@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import re
 import time
+import sys
 
 category = "CATEGORY NAME"
 
@@ -101,18 +102,21 @@ for file in list_to_add:
         success = True
       elif response.status_code == 429:
         print("Whoops, hit the rate limit")
-        pattern = r'(\d+) minute\(s\), (\d+) second\(s\)'
+        pattern = r"(\d+ minute\(s\), )?(\d+ second\(s\))|(\d+ second\(s\))"
         message = response.json().get('error', {}).get('message', '')
         match = re.search(pattern, message)
         if match:
           # Extract minutes and seconds from the matched groups
-          minutes = int(match.group(1))
-          seconds = int(match.group(2))
+          if match.group(1):
+            minutes = int(match.group(1).split(" ")[0])
+          else:
+            minutes = 0
+          seconds = int(match.group(2).split(" ")[0])
           print(f"Sleeping for Minutes: {minutes}, Seconds: {seconds+10}")
           time.sleep(minutes*60+seconds+10)
         else:
           print("Time not found in the input string.")
-          break
+          sys.exit()
       else:
         print("failed to upload file!")
         print(response.json())
