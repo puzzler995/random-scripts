@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# Script to glue Final Fantasy XIV Online's Discord Rich Presence together
+# Author: XenHat (me@xenh.at)
+# This work is licensed under the terms of the MIT license.
+# For a copy, see <https://opensource.org/licenses/MIT>.
+#
+# The latest version of this script should be available at:
+# https://gitlab.com/XenHat/dotfiles/-/blob/main/snowblocks/scripts/scripts/ffxiv_rpc_service
+#
+### USAGE ###
+# run this script before or after you run the game.
+# systemd service example at
+# https://gitlab.com/XenHat/dotfiles/-/blob/main/snowblocks/systemd/ffxiv-rpc-glue.service
+#
+### REQUIREMENTS ###
+# This script requires https://github.com/0e4ef622/wine-discord-ipc-bridge. it is available in the AUR as well.
+# The script will try to find the binary in a few predetermined locations.
+
+### SCRIPT BEGINS HERE
+#
+# Set a lock file to only allow one instance
+_lockfile="${XDG_RUNTIME_DIR:-/tmp}/ffxiv_rpc.lock"
+trap 'rm -f $_lockfile' EXIT
+if (
+	set -C
+	: >"$_lockfile"
+); then
+	_rpc_bridge_locations=('/opt/wine-discord-ipc-bridge' "$HOME/code/wine-discord-ipc-bridge" "/usr/local/bin" "$HOME/Downloads" "$HOME/Games")
+	_launcher_bin=""
+	_wine_executable=""
+	_launcher_ini="$HOME/.xlcore/launcher.ini"
+	_bridge_file=""
+
+	# NOTE: Reminder: in Unix-like OSes, false==1 and true==0; see
+	# https://tldp.org/LDP/abs/html/exitcodes.html#EXITCODESREF
+	_game_pid=""
+	is_xiv_running() {
+		_game_pid=$(pgrep ffxiv_dx11.exe 2>/dev/null)
+		return $?
+	}
+	is_discord_running() {
+		if pgrep -x discord >/dev/null 2>&1; then
+			return 0
+		fi
+		if pgrep -x Discord >/dev/null 2>&1; then
+			return 0
+		fi
+		if pgrep -i vesktop >/dev/null 2>&1; then
+			return 0
+		fi
+		return 1
+	}
+	_bridge_pid=""
+	is_bridge_running() {
+		_bridge_pid=$(pgrep -f winediscordipcbridge.exe 2>/dev/null)
+		return $?
+	}
+
+	get_wine_binary() {
+		##########################################################################
+		#							WARNING
+		# Changing the wine binary (and consequently regenerating the prefix)
+		# has a very high likelyhood of breaking dalamud plugins, leading to
+		# the game launch being stuck.
+		# If you are here because you are trying to fix this issue,
+		# do the following:
+		# mv ~/.xlcore/installedPlugins ~/.xlcore/installedPlugins.old
+		#
+		# You should be able to launch the game afterwards.
+
+		# Is wine version managed by xivlauncher?
+		wine_type=$(grep -F WineStartupType "$_launcher_ini" | cut -d '=' -f 2)
+		if [[ -z $wine_type ]]; then
+			echo >&2 "Error: Parsing XLCore config has failed"
+			exit 4
+		fi
+		if [[ $wine_type == "Managed" ]]; then
+			# Crude but until XLCore exposes this, it will have to do...
+			wine_binary_path=$(dirname "$(find "$HOME"/.xlcore/compatibilitytool/ -type f -name wine)")
+		else
+			_xlcore_wine_binary_path_setting=$(grep -F WineBinaryPath "$_launcher_ini" | cut -d '=' -f 2)
+			wine_binary_path="$_xlcore_wine_binary_path_setting"
+		fi
+		if [[ ! -d $(readlink -f "$wine_binary_path") ]]; then
+			echo "Wine executable doesn't exist!!!"
+			exit 1
+		fi
+		_wine_executable=${wine_binary_path}/wine
+		echo "Wine runner: $_wine_executable"
+	}
+	#NOTE: Is this still needed since we read the game's environment?
+	load_settings_from_xlcore() {
+		# The bridge needs to run using the same wine binary and the same FSYNC/ESYNC/FUTEX2/etc parameters, otherwise it will fail, or crash.
+		# Read the launcher configuration after the game has been launched
+		# in case the user edited the configuration
+
+		if grep -Fxq 'ESyncEnabled=true' "$_launcher_ini"; then
+			WINEESYNC=1
+		else
+			WINEESYNC=0
+		fi
+		if grep -Fxq 'FSyncEnabled=true' "$_launcher_ini"; then
+			WINEFSYNC=1
+		else
+			WINEFSYNC=0
+		fi
+		export WINEESYNC WINEFSYNC
+	}
+
+	clone_live_game_env() {
+		# Load the environment variables from the running process
+		# FIXME: Running wine with CAP_SYS_ADMIN will require running this script
+		# with the same permissions in order to read the environment file.
+		process_file="/proc/${_game_pid}/environ"
+		env_file=$HOME/.cache/ffxiv_env
+		rm -f "$env_file"
+		if [[ -f ${process_file} ]]; then
+			while IFS= read -r -d $'\0' file; do
+				if
+					[[ $file =~ XDG_ ]] ||
+						[[ $file =~ DXVK ]] ||
+						[[ $file =~ PROTON ]] ||
+						[[ $file =~ WINEPREFIX ]] ||
+						[[ $file =~ WINEESYNC ]] ||
+						[[ $file =~ WINEFSYNC ]] ||
+						[[ $file =~ DBUS ]] ||
+						[[ $file =~ AT_SPI_BUS ]]
+				then
+					# handle semicolons and other weird characters in value by re-assigning
+					(
+						IFS='=' read -r left right <<<"$file"
+						echo "export $left=\"$right\"" >>"$env_file"
+					)
+				fi
+			done <"$process_file"
+		fi
+		if [[ ! -f $env_file ]]; then
+			echo "Warning! Environment file not found! Missing permissions?"
+		else
+			source "$env_file"
+		fi
+	}
+
+	# TODO: merge all static path preparation into a single function
+	set_rpc_bridge_path() {
+		# reload wine path from settings in case it changed
+		# TODO: use a better method like until not empty and index < array_size
+		for bridge_path in "${_rpc_bridge_locations[@]}"; do
+			if [[ -d $bridge_path ]]; then
+				path_test="${bridge_path}/winediscordipcbridge.exe"
+				if [[ -f $path_test ]]; then
+					echo "Found RPC bridge: '$path_test'"
+					_bridge_file=$path_test
+					return
+				fi
+			fi
+		done
+		echo "Failed to find RPC Bridge!!!"
+		exit 1
+	}
+
+	# TODO: make this a one-shot service with a timer? Maybe?
+	# This is a service, never exit unless terminated
+	# HACK: pre-feed the variable
+	last_game_pid=$_game_pid
+	while sleep 5; do
+		if is_xiv_running; then
+			if [[ $last_game_pid -ne $_game_pid ]]; then
+				# game process changed, kill bridge to deal with env changes
+				echo "Game PID Changed; restarting service"
+				last_game_pid=$_game_pid
+				if is_bridge_running; then
+					kill -s TERM -- "$_bridge_pid"
+				fi
+			elif ! is_bridge_running; then
+				set_rpc_bridge_path
+				load_settings_from_xlcore
+				until is_xiv_running; do sleep 1; done
+				clone_live_game_env
+				get_wine_binary
+				if [[ -z $_wine_executable ]]; then echo "WINE EXECUTABLE NOT SET"; fi
+				if [[ -z $_bridge_file ]]; then echo "UH!!"; fi
+				$_wine_executable "$_bridge_file" &
+			fi
+		fi
+	done
+fi
+
